@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.system.mapper.SystemMapper">
+    <!-- 读取数据库版本和当前数据库名称。 -->
+    <select id="databaseInfo" resultType="com.example.rag.system.domain.DatabaseInfo">
+        SELECT current_setting('server_version') AS database_version, (SELECT extversion
+        FROM pg_extension
+        WHERE extname = 'vector') AS vector_version, (SELECT count(*)
+        FROM flyway_schema_history
+        WHERE success = true AND version IS NOT NULL) AS migrations
+    </select>
+
+</mapper>

@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.governance.mapper.GovernanceMapper">
+    <sql id="auditLogFilter">
+        a.created_at &gt;= #{filter.from} AND a.created_at &lt; #{filter.to}
+        <if test="filter.userId != null">AND a.user_id = #{filter.userId}</if>
+        <if test="filter.requestId != null">AND a.request_id = #{filter.requestId}</if>
+        <if test="filter.action != null">AND a.action = #{filter.action}</if>
+    </sql>
+
+    <select id="auditLogs" resultType="com.example.rag.governance.dto.AdminLogModels$AuditLog">
+        SELECT a.id, a.user_id, u.username, a.action, a.resource_id, a.request_id, a.trace_id, a.created_at
+        FROM audit_log a
+        LEFT JOIN sys_user u ON u.id = a.user_id
+        WHERE <include refid="auditLogFilter"/>
+        ORDER BY a.created_at DESC, a.id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countAuditLogs" resultType="long">
+        SELECT count(*) FROM audit_log a
+        WHERE <include refid="auditLogFilter"/>
+    </select>
+
+    <sql id="requestLogFilter">
+        r.created_at &gt;= #{filter.from} AND r.created_at &lt; #{filter.to}
+        <if test="filter.userId != null">AND r.user_id = #{filter.userId}</if>
+        <if test="filter.requestId != null">AND r.request_id = #{filter.requestId}</if>
+        <if test="filter.status != null">AND r.status = #{filter.status}</if>
+    </sql>
+
+    <select id="requestLogs" resultType="com.example.rag.governance.dto.AdminLogModels$RequestLog">
+        SELECT r.request_id, r.trace_id, r.user_id, u.username, d.name AS department_name,
+            r.message_id, r.route, r.reason_code, r.status, r.latency_ms, r.first_token_ms, r.cache_hit,
+            m.error_code, r.created_at, r.updated_at
+        FROM rag_request_trace r
+        LEFT JOIN sys_user u ON u.id = r.user_id
+        LEFT JOIN sys_department d ON d.id = r.department_id
+        LEFT JOIN chat_message m ON m.id = r.message_id
+        WHERE <include refid="requestLogFilter"/>
+        ORDER BY r.created_at DESC, r.request_id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countRequestLogs" resultType="long">
+        SELECT count(*) FROM rag_request_trace r
+        WHERE <include refid="requestLogFilter"/>
+    </select>
+
+    <select id="namespace" resultType="string">
+        SELECT current_database() || ':' || current_schema()
+    </select>
+
+    <select id="userSnapshot" resultType="string">
+        SELECT row_to_json(u)::text
+        FROM ( SELECT id, department_id, role, status, deleted, updated_at
+        FROM sys_user
+        WHERE id = #{userId} ) u
+    </select>
+
+    <select id="knowledgeBaseSnapshot" resultType="string">
+        SELECT row_to_json(k)::text
+        FROM ( SELECT id, department_id, owner_user_id, status, deleted, updated_at
+        FROM knowledge_base
+        WHERE id = #{knowledgeBaseId} ) k
+    </select>
+
+    <select id="aclSnapshot" resultType="string">
+        SELECT COALESCE(jsonb_agg(a
+        ORDER BY a.id), '[]'::jsonb)::text
+        FROM ( SELECT id, subject_type, subject_id, permission, updated_at
+        FROM knowledge_base_acl
+        WHERE knowledge_base_id = #{knowledgeBaseId} ) a
+    </select>
+
+    <select id="documentSnapshot" resultType="string">
+        SELECT COALESCE(jsonb_agg(d
+        ORDER BY d.id), '[]'::jsonb)::text
+        FROM ( SELECT id, current_version, status, deleted, updated_at
+        FROM document
+        WHERE knowledge_base_id = #{knowledgeBaseId} ) d
+    </select>
+
+    <select id="completedAnswers" resultType="int">
+        SELECT count(*)
+        FROM chat_message
+        WHERE conversation_id = #{conversationId} AND role = 'ASSISTANT' AND status = 'COMPLETED'
+    </select>
+
+    <select id="citationKnowledgeBases" resultType="long">
+        SELECT d.knowledge_base_id
+        FROM document d JOIN document_chunk c ON c.document_id = d.id
+        WHERE d.id = #{documentId} AND d.current_version = #{version} AND NOT d.deleted AND d.status = 'COMPLETED'
+        AND c.id = #{chunkId} AND c.document_version = d.current_version AND NOT c.deleted
+    </select>
+
+    <insert id="audit">
+        INSERT INTO audit_log(user_id, action, resource_id, request_id, trace_id)
+        VALUES (#{actor}, #{action}, #{resourceId,jdbcType=BIGINT}, #{requestId}, #{traceId})
+    </insert>
+
+</mapper>

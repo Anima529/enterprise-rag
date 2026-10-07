@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.department.mapper.DepartmentMapper">
+    <!-- 统计未删除的部门记录数。 -->
+    <select id="count" resultType="long">
+        SELECT count(*)
+        FROM sys_department
+        WHERE deleted = false
+    </select>
+
+    <!-- 按部门 ID 分页读取未删除的部门。 -->
+    <select id="list" resultType="com.example.rag.department.dto.DepartmentResponse">
+        SELECT id, code, name, status
+        FROM sys_department
+        WHERE deleted = false
+        ORDER BY id
+        LIMIT #{limit}
+        OFFSET #{offset}
+    </select>
+
+</mapper>

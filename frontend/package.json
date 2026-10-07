@@ -1,0 +1,46 @@
+{
+  "name": "enterprise-rag-frontend",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.11.1",
+    "npm": "11.6.4"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "format": "node ../scripts/format-code.mjs --write",
+    "format:check": "node ../scripts/format-code.mjs",
+    "lint:readability": "node ../scripts/check-readability.mjs",
+    "lint:magic-values": "node ../scripts/check-magic-values.mjs",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "axios": "1.13.2",
+    "echarts": "6.1.0",
+    "markdown-it": "14.3.0",
+    "pinia": "3.0.4",
+    "vue": "3.5.26",
+    "vue-router": "4.6.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.2",
+    "@types/markdown-it": "14.1.2",
+    "@types/node": "24.10.1",
+    "@vitejs/plugin-vue": "6.0.2",
+    "eslint": "9.39.2",
+    "eslint-plugin-vue": "10.6.2",
+    "globals": "16.5.0",
+    "prettier": "3.9.9",
+    "prettier-plugin-java": "2.11.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.50.1",
+    "vite": "7.3.1",
+    "vue-eslint-parser": "10.2.0",
+    "vue-tsc": "3.1.8"
+  }
+}

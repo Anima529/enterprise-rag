@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.user.mapper.UserMapper">
+    <!-- 复用既有 ACCOUNT_COLUMNS 条件，权限和查询字段保持原语义。 -->
+    <sql id="ACCOUNT_COLUMNS">
+        SELECT u.id, u.username, u.password_hash, u.department_id, d.name AS department_name, u.role, u.status,
+        u.deleted, d.status AS department_status, d.deleted AS department_deleted
+        FROM sys_user u JOIN sys_department d ON d.id = u.department_id
+    </sql>
+
+    <!-- 统计未删除的用户账号数。 -->
+    <select id="count" resultType="long">
+        SELECT count(*)
+        FROM sys_user
+        WHERE deleted = false
+    </select>
+
+    <!-- 分页查询未删除的用户账号。 -->
+    <select id="list" resultType="com.example.rag.user.domain.UserAccount">
+        <include refid="ACCOUNT_COLUMNS"/>
+        WHERE u.deleted = false
+        ORDER BY u.id
+        LIMIT #{limit}
+        OFFSET #{offset}
+    </select>
+
+    <!-- 按用户 ID 读取账号最新状态与角色。 -->
+    <select id="findById" resultType="com.example.rag.user.domain.UserAccount">
+        <include refid="ACCOUNT_COLUMNS"/>
+        WHERE u.id = #{id}
+    </select>
+
+    <!-- 按用户名读取账号及密码摘要，供登录校验。 -->
+    <select id="findByUsername" resultType="com.example.rag.user.domain.UserAccount">
+        <include refid="ACCOUNT_COLUMNS"/>
+        WHERE u.username = #{username}
+    </select>
+
+</mapper>

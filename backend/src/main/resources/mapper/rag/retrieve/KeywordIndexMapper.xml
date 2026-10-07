@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.rag.retrieve.mapper.KeywordIndexMapper">
+    <!-- 仅更新正文未变化的 Child，避免启动补齐覆盖并发重建的词项。 -->
+    <update id="update">
+        UPDATE document_chunk
+        SET keyword_text=#{terms},keyword_analyzer=#{analyzer},
+        keyword_content_hash=encode(sha256(convert_to(content,'UTF8')),'hex')
+        WHERE id=#{id} AND content=#{content} AND chunk_type='CHILD' AND NOT deleted
+    </update>
+
+    <!-- 分批读取词项缺失、过期或正文已变化的有效 Child。 -->
+    <select id="pending" resultType="com.example.rag.rag.retrieve.mapper.KeywordIndexMapper$Pending">
+        SELECT id,content
+        FROM document_chunk
+        WHERE chunk_type='CHILD' AND NOT deleted AND (keyword_analyzer&lt;>#{analyzer} OR keyword_content_hash IS
+        DISTINCT
+        FROM encode(sha256(convert_to(content,'UTF8')),'hex'))
+        ORDER BY id
+        LIMIT #{limit}
+    </select>
+
+</mapper>

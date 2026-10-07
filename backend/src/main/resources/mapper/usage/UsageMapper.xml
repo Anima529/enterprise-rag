@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.usage.mapper.UsageMapper">
+    <select id="cacheNamespace" resultType="string">
+        SELECT current_database() || ':' || current_schema()
+    </select>
+
+    <select id="price" resultType="com.example.rag.usage.dto.UsageModels$Price">
+        SELECT id, model, version, basis, input_price, output_price, currency, effective_at
+        FROM ai_price
+        WHERE model = #{model} AND effective_at &lt;= clock_timestamp()
+        ORDER BY effective_at DESC, id DESC
+        LIMIT 1
+    </select>
+
+    <select id="prices" resultType="map">
+        SELECT model, version, basis, input_price, output_price, currency, effective_at
+        FROM ai_price
+        ORDER BY effective_at DESC, id DESC
+    </select>
+
+    <insert id="addPrice">
+        INSERT INTO ai_price(model, version, basis, input_price, output_price, currency)
+        VALUES (#{price.model}, #{price.version}, #{price.basis}, #{price.inputPrice}, #{price.outputPrice}, 'CNY')
+    </insert>
+
+    <select id="documentIdentity" resultType="com.example.rag.usage.dto.UsageModels$Identity">
+        SELECT u.id AS user_id, u.department_id, NULL::bigint AS conversation_id, NULL::bigint AS message_id
+        FROM document d JOIN sys_user u ON u.id = d.created_by
+        WHERE d.id = #{documentId}
+    </select>
+
+    <select id="requestIdentity" resultType="com.example.rag.usage.dto.UsageModels$Identity">
+        SELECT m.user_id, u.department_id, m.conversation_id, m.id AS message_id
+        FROM chat_message m JOIN sys_user u ON u.id = m.user_id
+        WHERE m.request_id = #{requestId} AND m.role = 'ASSISTANT'
+    </select>
+
+    <insert id="insert">
+        INSERT INTO ai_usage(request_id, trace_id, call_id, user_id, department_id, conversation_id, message_id,
+        stage, provider, model, input_tokens, output_tokens, units, latency_ms, success, error_code, price_id,
+        price_version, estimated_cost)
+        VALUES (#{call.requestId}, #{call.traceId}, #{call.callId}, #{call.identity.userId},
+        #{call.identity.departmentId}, #{call.identity.conversationId}, #{call.identity.messageId}, #{call.stage},
+        'DASHSCOPE', #{call.model}, #{call.inputTokens}, #{call.outputTokens}, #{call.units}, #{call.latencyMs},
+        #{call.success}, #{call.errorCode}, #{priceId,jdbcType=BIGINT}, #{priceVersion}, #{call.cost})
+        ON CONFLICT (request_id, stage, call_id) DO NOTHING
+    </insert>
+
+    <!-- 所有聚合共用日期与用户过滤；NULL 用户只用于已授权的管理员调用。 -->
+    <sql id="usageScope">
+        WHERE created_at &gt;= #{from} AND created_at &lt; #{to} AND (CAST(#{userId,jdbcType=BIGINT} AS bigint) IS
+        NULL OR user_id = #{userId,jdbcType=BIGINT})
+    </sql>
+
+    <select id="totals" resultType="map">
+        SELECT count(*) AS calls, coalesce(max(id), 0) AS last_id, coalesce(sum(input_tokens), 0) AS input_tokens,
+        coalesce(sum(output_tokens), 0) AS output_tokens, sum(estimated_cost) AS estimated_cost, count(*)
+        FILTER(WHERE estimated_cost IS NULL) AS unpriced_calls, count(*) FILTER(WHERE NOT success) AS errors,
+        coalesce(percentile_cont(0.95) WITHIN GROUP(ORDER BY latency_ms), 0) AS p95_ms
+        FROM ai_usage
+        <include refid="usageScope"/>
+    </select>
+
+    <select id="breakdown" resultType="map">
+        SELECT
+        <choose>
+            <when test="dimension == 'stage'">
+                stage
+            </when>
+            <when test="dimension == 'model'">
+                model
+            </when>
+            <otherwise>
+                to_char(created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')
+            </otherwise>
+        </choose>
+        AS label, count(*) AS calls, sum(estimated_cost) AS estimated_cost, count(*) FILTER(WHERE estimated_cost IS
+        NULL) AS unpriced_calls, count(*) FILTER(WHERE NOT success) AS errors, percentile_cont(0.95) WITHIN
+        GROUP(ORDER BY latency_ms) AS p95_ms
+        FROM ai_usage
+        <include refid="usageScope"/>
+        GROUP BY 1
+        ORDER BY 1
+    </select>
+
+    <select id="routes" resultType="map">
+        SELECT route AS label, count(*) AS requests, count(*) FILTER(WHERE status = 'FAILED') AS errors, count(*)
+        FILTER(WHERE status = 'CANCELLED') AS cancelled, count(*) FILTER(WHERE status = 'RUNNING') AS running,
+        count(*) FILTER(WHERE cache_hit) AS cache_hits, percentile_cont(0.95) WITHIN GROUP(ORDER BY latency_ms)
+        FILTER(WHERE status &lt;&gt; 'RUNNING') AS p95_ms, percentile_cont(0.95) WITHIN GROUP(ORDER BY
+        first_token_ms) AS first_token_p95_ms
+        FROM rag_request_trace
+        <include refid="usageScope"/>
+        GROUP BY route
+        ORDER BY route
+    </select>
+
+    <insert id="startRequest">
+        INSERT INTO rag_request_trace(request_id, trace_id, message_id, user_id, department_id)
+        VALUES (#{requestId}, #{traceId}, #{messageId}, #{userId}, #{departmentId})
+        ON CONFLICT DO NOTHING
+    </insert>
+
+    <update id="finishRequest">
+        UPDATE rag_request_trace
+        SET route = #{route}, reason_code = #{reason}, status = #{status}, latency_ms = #{latency}, first_token_ms =
+        #{first}
+        WHERE request_id = #{requestId} AND status = 'RUNNING'
+    </update>
+
+    <update id="markCacheHit">
+        UPDATE rag_request_trace
+        SET cache_hit = #{cacheHit}
+        WHERE request_id = #{requestId}
+    </update>
+
+    <select id="requestCost" resultType="map">
+        SELECT CASE WHEN count(*) FILTER(WHERE estimated_cost IS NULL) = 0 THEN sum(estimated_cost) END AS cost,
+        count(*) FILTER(WHERE estimated_cost IS NULL) AS unpriced_calls, count(*) AS calls
+        FROM ai_usage
+        WHERE request_id = #{requestId}
+    </select>
+
+</mapper>

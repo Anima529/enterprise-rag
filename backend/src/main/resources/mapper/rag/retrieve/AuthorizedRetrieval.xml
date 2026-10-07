@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 两路召回复用实时账号、ACL、当前版本和索引一致性；此 namespace 只管理 SQL 片段。 -->
+<mapper namespace="com.example.rag.rag.retrieve.mapper.AuthorizedRetrievalSql">
+    <sql id="COLUMNS">
+        c.id AS chunk_id,c.parent_chunk_id,c.knowledge_base_id,c.department_id,c.document_id,c.document_version,
+        c.content,(parent.metadata || jsonb_build_object('parentChunkIndex',parent.chunk_index))::text AS
+        metadata_json
+    </sql>
+
+    <sql id="SOURCES">
+        parent.content AS parent_content, v.name AS document_name,parent.page_number,parent.chapter,parent.section
+    </sql>
+
+    <sql id="SCOPE">
+        FROM document_chunk c
+        JOIN knowledge_base k ON k.id = c.knowledge_base_id AND k.department_id = c.department_id
+        JOIN document d ON d.id = c.document_id AND d.knowledge_base_id = k.id
+            AND d.current_version = c.document_version
+        JOIN document_version v ON v.document_id = d.id AND v.version_no = c.document_version
+        JOIN document_chunk_result r ON r.document_id = c.document_id AND r.document_version = c.document_version
+        JOIN document_parse_result p ON p.document_id = r.document_id AND p.document_version = r.document_version
+            AND p.updated_at &lt;= r.updated_at
+        JOIN document_embedding_result e ON e.document_id = r.document_id AND e.document_version = r.document_version
+            AND e.chunked_at = r.updated_at AND e.child_count = r.child_count
+        JOIN document_chunk parent ON parent.id = c.parent_chunk_id AND NOT parent.deleted AND parent.chunk_type = 'PARENT'
+            AND parent.document_id = c.document_id AND parent.document_version = c.document_version
+            AND parent.knowledge_base_id = c.knowledge_base_id AND parent.department_id = c.department_id
+        JOIN sys_user u ON u.id = #{scope.userId} AND u.status = 'ACTIVE' AND NOT u.deleted
+        JOIN sys_department dept ON dept.id = u.department_id AND dept.status = 'ACTIVE' AND NOT dept.deleted
+        WHERE NOT c.deleted AND NOT d.deleted AND NOT k.deleted AND k.status = 'ENABLED'
+            AND d.status = 'COMPLETED' AND v.status = 'COMPLETED' AND c.chunk_type = 'CHILD'
+            AND (
+                <foreach collection="scope.knowledgeBases" item="pair" separator=" OR ">
+                    (c.knowledge_base_id = #{pair.knowledgeBaseId} AND c.department_id = #{pair.departmentId})
+                </foreach>
+            )
+            AND (u.role = 'SYSTEM_ADMIN' OR k.owner_user_id = u.id OR EXISTS (
+                SELECT 1 FROM knowledge_base_acl a WHERE a.knowledge_base_id = k.id AND (
+                    (a.subject_type = 'USER' AND a.subject_id = CAST(u.id AS text)) OR
+                    (a.subject_type = 'DEPARTMENT' AND a.subject_id = CAST(u.department_id AS text)) OR
+                    (a.subject_type = 'ROLE' AND a.subject_id = u.role)
+                )
+            ))
+    </sql>
+
+</mapper>

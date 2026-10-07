@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.evaluation.mapper.EvaluationMapper">
+    <select id="insertDataset" resultType="long" affectData="true" flushCache="true" useCache="false">
+        INSERT INTO evaluation_dataset(name, description, evaluation_user_id, created_by)
+        VALUES (#{request.name}, #{request.description}, #{request.evaluationUserId}, #{creator})
+        RETURNING id
+    </select>
+
+    <insert id="insertCase">
+        INSERT INTO evaluation_case(dataset_id, case_index, case_snapshot)
+        VALUES (#{datasetId}, #{index}, CAST(#{snapshot} AS jsonb))
+    </insert>
+
+    <select id="datasets" resultType="map">
+        SELECT id, name, description, evaluation_user_id, created_at, (SELECT count(*)
+        FROM evaluation_case c
+        WHERE c.dataset_id = d.id) AS case_count
+        FROM evaluation_dataset d
+        WHERE NOT deleted
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="dataset" resultType="map">
+        SELECT id, name, description, evaluation_user_id, created_at
+        FROM evaluation_dataset
+        WHERE id = #{id} AND NOT deleted
+    </select>
+
+    <select id="cases" resultType="map">
+        SELECT id, case_index, case_snapshot::text AS snapshot
+        FROM evaluation_case
+        WHERE dataset_id = #{datasetId}
+        ORDER BY case_index
+    </select>
+
+    <select id="lockDatasets" resultType="long" useCache="false">
+        SELECT id
+        FROM evaluation_dataset
+        ORDER BY id FOR UPDATE
+    </select>
+
+    <select id="pendingRuns" resultType="int">
+        SELECT count(*)
+        FROM evaluation_run
+        WHERE status IN ('PENDING', 'RUNNING')
+    </select>
+
+    <select id="enqueue" resultType="long" affectData="true" flushCache="true" useCache="false">
+        INSERT INTO evaluation_run(dataset_id, name, mode, config_snapshot)
+        VALUES (#{datasetId}, #{name}, #{mode}, CAST(#{snapshot} AS jsonb))
+        RETURNING id
+    </select>
+
+    <update id="expireRunning">
+        UPDATE evaluation_run
+        SET status = 'FAILED', error_code = 'EVAL_LEASE_EXPIRED', finished_at = clock_timestamp(), updated_at =
+        clock_timestamp(), lease_owner = NULL, lease_expires_at = NULL
+        WHERE status = 'RUNNING' AND lease_expires_at &lt; clock_timestamp()
+    </update>
+
+    <select id="claim" resultType="map" affectData="true" flushCache="true" useCache="false">
+        UPDATE evaluation_run
+        SET status = 'RUNNING', lease_owner = #{owner}, lease_expires_at = clock_timestamp() + (#{leaseMs} *
+        interval '1 millisecond'), started_at = clock_timestamp(), updated_at = clock_timestamp()
+        WHERE id = ( SELECT id
+        FROM evaluation_run
+        WHERE status = 'PENDING'
+        ORDER BY id FOR UPDATE SKIP LOCKED
+        LIMIT 1 )
+        RETURNING id, dataset_id, mode, config_snapshot::text AS snapshot
+    </select>
+
+    <update id="renew">
+        UPDATE evaluation_run
+        SET lease_expires_at = clock_timestamp() + (#{leaseMs} * interval '1 millisecond'), updated_at =
+        clock_timestamp()
+        WHERE id = #{runId} AND status = 'RUNNING' AND lease_owner = #{owner} AND lease_expires_at &gt;
+        clock_timestamp()
+    </update>
+
+    <insert id="insertResult">
+        INSERT INTO evaluation_result(run_id, case_id, result_snapshot) SELECT id, #{caseId}, CAST(#{snapshot} AS
+        jsonb)
+        FROM evaluation_run
+        WHERE id = #{runId} AND status = 'RUNNING' AND lease_owner = #{owner} AND lease_expires_at &gt;
+        clock_timestamp()
+        ON CONFLICT (run_id, case_id) DO NOTHING
+    </insert>
+
+    <update id="finish">
+        UPDATE evaluation_run
+        SET status = #{status}, summary = CAST(#{summary} AS jsonb), error_code = #{error}, finished_at =
+        clock_timestamp(), updated_at = clock_timestamp(), lease_owner = NULL, lease_expires_at = NULL
+        WHERE id = #{id} AND status = 'RUNNING' AND lease_owner = #{owner} AND lease_expires_at &gt;
+        clock_timestamp()
+    </update>
+
+    <select id="runs" resultType="map">
+        SELECT id, name, mode, status, error_code, started_at, finished_at, summary::text AS summary
+        FROM evaluation_run
+        WHERE dataset_id = #{datasetId}
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="run" resultType="map">
+        SELECT id, dataset_id, name, mode, status, error_code, config_snapshot::text AS config_snapshot,
+        summary::text AS summary, started_at, finished_at
+        FROM evaluation_run
+        WHERE id = #{id}
+    </select>
+
+    <select id="results" resultType="map">
+        SELECT case_id, result_snapshot::text AS snapshot
+        FROM evaluation_result
+        WHERE run_id = #{runId}
+        ORDER BY case_id
+    </select>
+
+    <sql id="currentChild">
+        FROM document_chunk c JOIN document d ON d.id = c.document_id
+        WHERE c.id = #{chunkId} AND c.chunk_type = 'CHILD' AND NOT c.deleted AND NOT d.deleted AND
+        c.document_version = d.current_version AND d.status = 'COMPLETED'
+    </sql>
+
+    <select id="childKnowledgeBases" resultType="long">
+        SELECT c.knowledge_base_id
+        <include refid="currentChild"/>
+    </select>
+
+    <select id="currentChildCount" resultType="int">
+        SELECT count(*)
+        <include refid="currentChild"/>
+    </select>
+
+    <select id="documents" resultType="map">
+        SELECT d.id, d.current_version, d.sha256, c.id AS chunk_id, c.chunk_type, c.chunk_index, c.embedding_model,
+        c.embedding_dimensions, c.embedding_content_hash
+        FROM document d JOIN document_chunk c ON c.document_id = d.id
+        WHERE d.knowledge_base_id = #{knowledgeBaseId} AND NOT d.deleted AND NOT c.deleted AND c.document_version =
+        d.current_version
+        ORDER BY d.id, c.id
+    </select>
+
+</mapper>

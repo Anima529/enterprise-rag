@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.auth.mapper.seed.DevSeedMapper">
+    <!-- 幂等插入开发账号，保留已有账号的密码和角色。 -->
+    <insert id="insertUser">
+        INSERT INTO sys_user(username, password_hash, department_id, role)
+        VALUES (#{username}, #{hash}, #{departmentId}, #{role})
+        ON CONFLICT (username) DO NOTHING
+    </insert>
+
+    <!-- 查询开发部门的有效记录 ID。 -->
+    <select id="activeDepartmentId" resultType="java.lang.Long">
+        SELECT id
+        FROM sys_department
+        WHERE code = #{code} AND deleted = false AND status = 'ACTIVE'
+    </select>
+
+    <!-- 幂等插入开发部门，已有编码不重复创建。 -->
+    <insert id="insertDepartment">
+        INSERT INTO sys_department(code, name)
+        VALUES (#{code}, #{name})
+        ON CONFLICT (code) DO NOTHING
+    </insert>
+
+</mapper>

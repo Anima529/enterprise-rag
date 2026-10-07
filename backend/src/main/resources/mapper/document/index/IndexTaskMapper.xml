@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.document.mapper.index.IndexTaskMapper">
+    <!-- 复用既有 LIVE 条件，权限和查询字段保持原语义。 -->
+    <sql id="LIVE">
+        EXISTS(
+            SELECT 1 FROM document d JOIN knowledge_base k ON k.id = d.knowledge_base_id
+            WHERE d.id = t.document_id AND (
+                d.current_version = t.document_version OR
+                t.document_version = (SELECT max(v.version_no) FROM document_version v WHERE v.document_id = d.id)
+            ) AND NOT d.deleted AND NOT k.deleted AND k.status = 'ENABLED'
+        )
+    </sql>
+
+    <!-- 复用既有 COLUMNS 条件，权限和查询字段保持原语义。 -->
+    <sql id="COLUMNS">
+        SELECT t.id, t.document_id, t.document_version, t.status, t.stage, t.attempt_count, t.retry_count,
+            t.auto_retry_count, t.lease_owner, t.lease_expires_at,
+        <include refid="LIVE"/>
+        AS live, COALESCE(t.lease_expires_at > clock_timestamp(), false) AS lease_valid
+        FROM document_index_task t
+    </sql>
+
+    <!-- 锁定任务行以串行处理租约和状态更新。 -->
+    <select id="lock" resultType="com.example.rag.document.domain.index.IndexTaskLease">
+        <include refid="COLUMNS"/>
+        WHERE t.id = #{id} FOR UPDATE OF t
+    </select>
+
+    <!-- 读取任务及当前租约信息。 -->
+    <select id="find" resultType="com.example.rag.document.domain.index.IndexTaskLease">
+        <include refid="COLUMNS"/>
+        WHERE t.id = #{id}
+    </select>
+
+    <!-- 保存失败原因和重试计划并释放当前租约。 -->
+    <update id="fail">
+        UPDATE document_index_task
+        SET status = #{status}, stage = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, error_code = #{code},
+        error_message = #{message}, finished_at = clock_timestamp(), next_attempt_at = clock_timestamp() +
+        #{delayMs} * interval '1 millisecond', retry_count = retry_count + CASE WHEN #{retry} THEN 1 ELSE 0 END,
+        auto_retry_count = auto_retry_count + CASE WHEN #{retry} THEN 1 ELSE 0 END
+        WHERE id = #{id}
+    </update>
+
+    <!-- 分页查询任务的各次阶段记录。 -->
+    <select id="steps" resultType="com.example.rag.document.dto.index.IndexStepResponse">
+        SELECT id, task_id, attempt, stage, status, started_at, finished_at, error_code, error_message
+        FROM document_index_step
+        WHERE task_id = #{id}
+        ORDER BY attempt, id
+        LIMIT #{limit}
+        OFFSET #{offset}
+    </select>
+
+    <!-- 将有效租约对应的任务标记为完成。 -->
+    <update id="complete">
+        UPDATE document_index_task
+        SET status = 'COMPLETED', stage = 'COMPLETED', lease_owner = NULL, lease_expires_at = NULL, finished_at =
+        clock_timestamp()
+        WHERE id = #{id}
+    </update>
+
+    <!-- 推进任务阶段并续租有效租约。 -->
+    <update id="stage">
+        UPDATE document_index_task
+        SET stage = #{stage}
+        WHERE id = #{id}
+    </update>
+
+    <!-- 锁定需要恢复的过期任务或来源失效任务。 -->
+    <select id="recoverable" resultType="java.lang.Long">
+        SELECT t.id
+        FROM document_index_task t
+        WHERE (t.status = 'RUNNING' AND t.lease_expires_at &lt;= clock_timestamp()) OR (t.status IN
+        ('PENDING','RUNNING') AND NOT (
+        <include refid="LIVE"/>
+        ))
+        ORDER BY t.id
+        LIMIT #{limit} FOR UPDATE OF t SKIP LOCKED
+    </select>
+
+    <!-- 记录本次尝试的阶段开始时间。 -->
+    <insert id="startStep">
+        INSERT INTO document_index_step(task_id, attempt, stage)
+        VALUES (#{task.id}, #{task.attemptCount}, #{stage})
+    </insert>
+
+    <!-- 统计任务阶段记录数。 -->
+    <select id="countSteps" resultType="long">
+        SELECT count(*)
+        FROM document_index_step
+        WHERE task_id = #{id}
+    </select>
+
+    <!-- 保存阶段终态、错误信息和结束时间。 -->
+    <update id="finishStep">
+        UPDATE document_index_step
+        SET status = #{status}, finished_at = clock_timestamp(), error_code = #{code}, error_message = #{message}
+        WHERE task_id = #{task.id} AND attempt = #{task.attemptCount} AND stage = #{task.stage} AND status =
+        'RUNNING'
+    </update>
+
+    <!-- 将待执行任务置为运行中并登记新的租约与尝试次数。 -->
+    <update id="claim">
+        UPDATE document_index_task
+        SET status = 'RUNNING', stage = 'PARSING', attempt_count = attempt_count + 1, lease_owner = #{owner},
+        lease_expires_at = clock_timestamp() + #{timeoutMs} * interval '1 millisecond', started_at =
+        clock_timestamp(), finished_at = NULL, error_code = NULL, error_message = NULL
+        WHERE id = #{id}
+    </update>
+
+    <!-- 原子切换已完成版本及原文件元数据，保留旧版本直到新版本成功。 -->
+    <update id="activate">
+        UPDATE document d
+        SET current_version=v.version_no,status='COMPLETED',name=v.name,
+        source_format=v.source_format,mime_type=v.mime_type,size_bytes=v.size_bytes,sha256=v.sha256,object_key=v.object_key
+        FROM document_version v
+        WHERE d.id=#{id} AND v.document_id=d.id AND v.version_no=#{version} AND v.status='COMPLETED' AND
+        d.current_version &lt; v.version_no AND NOT d.deleted
+    </update>
+
+    <!-- 锁定一个到期待执行的有效来源任务，跳过其他领取者的锁。 -->
+    <select id="nextPending" resultType="java.lang.Long">
+        SELECT t.id
+        FROM document_index_task t
+        WHERE t.status = 'PENDING' AND t.next_attempt_at &lt;= now() AND
+        <include refid="LIVE"/>
+        ORDER BY t.next_attempt_at, t.id
+        LIMIT 1 FOR UPDATE OF t SKIP LOCKED
+    </select>
+
+    <!-- 同步文档版本的阶段状态与错误信息。 -->
+    <update id="versionStage">
+        UPDATE document_version
+        SET status = #{stage}
+        WHERE document_id = #{documentId} AND version_no = #{version}
+    </update>
+
+    <!-- 同步文档的阶段状态与错误信息。 -->
+    <update id="documentStage">
+        UPDATE document
+        SET status = #{stage}
+        WHERE id = #{documentId} AND current_version = #{version} AND NOT deleted
+    </update>
+
+    <!-- 将可重试的失败任务重新置为待执行。 -->
+    <update id="manualRetry">
+        UPDATE document_index_task
+        SET status = 'PENDING', stage = 'UPLOADED', retry_count = retry_count + 1, auto_retry_count = 0,
+        next_attempt_at = clock_timestamp(), started_at = NULL, finished_at = NULL, error_code = NULL, error_message
+        = NULL
+        WHERE id = #{id}
+    </update>
+
+    <!-- 安排已失效旧版本的延迟索引清理。 -->
+    <insert id="scheduleOld">
+        INSERT INTO document_cleanup_task(document_id,document_version,cleanup_type,next_attempt_at) SELECT
+        document_id,version_no,'OLD_INDEX',clock_timestamp()+#{graceMs}*interval '1 millisecond'
+        FROM document_version
+        WHERE document_id=#{id} AND version_no &lt; #{version}
+        ON CONFLICT DO NOTHING
+    </insert>
+
+</mapper>

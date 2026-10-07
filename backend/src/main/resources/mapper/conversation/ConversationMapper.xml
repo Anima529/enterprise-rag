@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.conversation.mapper.ConversationMapper">
+    <!-- 按消息顺序分页读取会话历史。 -->
+    <select id="messages" resultType="com.example.rag.conversation.dto.ConversationModels$MessageRow">
+        SELECT id,conversation_id,role,content,request_id,trace_id,status,error_code,confidence_level,
+        faithfulness_status,input_tokens,output_tokens,created_at,verification_details::text AS verification_json,
+        (SELECT CASE WHEN count(*) FILTER(WHERE estimated_cost IS NULL)=0 THEN sum(estimated_cost) END
+        FROM ai_usage u
+        WHERE u.request_id=chat_message.request_id) AS estimated_cost
+        FROM chat_message
+        WHERE conversation_id=#{id}
+        ORDER BY id
+        LIMIT #{limit}
+        OFFSET #{offset}
+    </select>
+
+    <!-- 锁定用户所属会话，串行处理会话内的写入。 -->
+    <select id="lock" resultType="com.example.rag.conversation.dto.ConversationModels$Conversation">
+        SELECT id,title,created_at,updated_at
+        FROM conversation
+        WHERE id=#{id} AND user_id=#{user} AND NOT deleted FOR UPDATE
+    </select>
+
+    <!-- 保存请求消息及追踪、状态和授权知识库信息。 -->
+    <select id="insert" resultType="long" affectData="true" flushCache="true" useCache="false">
+        INSERT INTO
+        chat_message(conversation_id,user_id,role,content,request_id,trace_id,status,knowledge_base_ids,expires_at)
+        VALUES (#{conversation},#{user},#{role},#{content},#{request},#{trace},#{status},CAST(#{scope} AS jsonb),
+        clock_timestamp()+#{timeoutMs}*interval '1 millisecond')
+        RETURNING id
+    </select>
+
+    <!-- 统计用户未删除的会话数。 -->
+    <select id="count" resultType="long">
+        SELECT count(*)
+        FROM conversation
+        WHERE user_id=#{user} AND NOT deleted
+    </select>
+
+    <!-- 按更新时间分页查询用户的有效会话。 -->
+    <select id="list" resultType="com.example.rag.conversation.dto.ConversationModels$Conversation">
+        SELECT id,title,created_at,updated_at
+        FROM conversation
+        WHERE user_id=#{user} AND NOT deleted
+        ORDER BY updated_at DESC,id DESC
+        LIMIT #{limit}
+        OFFSET #{offset}
+    </select>
+
+    <!-- 按会话和用户 ID 查询未删除的会话。 -->
+    <select id="find" resultType="com.example.rag.conversation.dto.ConversationModels$Conversation">
+        SELECT id,title,created_at,updated_at
+        FROM conversation
+        WHERE id=#{id} AND user_id=#{user} AND NOT deleted
+    </select>
+
+    <!-- 限定会话归属和消息引用，旧快照仅返回其保存的片段，不关联后续版本正文。 -->
+    <select id="source" resultType="com.example.rag.conversation.mapper.ConversationMapper$SourceRow">
+        SELECT COALESCE(c.evidence_content,c.snippet) AS content,c.source_metadata::text AS metadata_json,
+        v.source_format AS format
+        FROM message_citation c JOIN chat_message m ON m.id=c.message_id JOIN conversation conv ON
+        conv.id=m.conversation_id AND conv.user_id=#{user} AND NOT conv.deleted JOIN document_version v ON
+        v.document_id=c.document_id AND v.version_no=c.document_version
+        WHERE m.id=#{message} AND conv.id=#{conversation} AND c.citation_id=#{citation}
+    </select>
+
+    <!-- 只读取本人未删除会话的追踪；历史候选返回前还须复查知识库权限。 -->
+    <select id="trace" resultType="com.example.rag.conversation.mapper.ConversationMapper$RetrievalTrace">
+        SELECT m.knowledge_base_ids::text AS scope_json,m.retrieval_trace::text AS trace_json
+        FROM chat_message m JOIN conversation c ON c.id=m.conversation_id AND NOT c.deleted
+        WHERE m.request_id=#{request} AND m.role='ASSISTANT' AND m.user_id=#{user} AND c.user_id=#{user}
+    </select>
+
+    <!-- 软删除用户所属会话。 -->
+    <update id="delete">
+        UPDATE conversation
+        SET deleted=true
+        WHERE id=#{id} AND user_id=#{user} AND NOT deleted
+    </update>
+
+    <!-- 仅将运行中消息更新为终态并保存内容与 Token 用量。 -->
+    <update id="finish">
+        UPDATE chat_message
+        SET content=#{content},status=#{status},error_code=#{error}, input_tokens=#{input},output_tokens=#{output}
+        WHERE id=#{id} AND status='GENERATING'
+    </update>
+
+    <!-- 插入用户会话并返回创建结果。 -->
+    <select id="create" resultType="com.example.rag.conversation.dto.ConversationModels$Conversation" affectData="true" flushCache="true" useCache="false">
+        INSERT INTO conversation(user_id,title)
+        VALUES (#{user},#{title})
+        RETURNING id,title,created_at,updated_at
+    </select>
+
+    <!-- 更新用户所属会话的标题与更新时间。 -->
+    <update id="rename">
+        UPDATE conversation
+        SET title=#{title}
+        WHERE id=#{id} AND user_id=#{user} AND NOT deleted
+    </update>
+
+    <!-- 检查会话是否仍有未过期的生成任务。 -->
+    <select id="busy" resultType="boolean">
+        SELECT EXISTS(SELECT 1
+        FROM chat_message
+        WHERE conversation_id=#{id} AND role='ASSISTANT' AND status='GENERATING')
+    </select>
+
+    <!-- 保存运行中消息的最新部分回答。 -->
+    <update id="progress">
+        UPDATE chat_message
+        SET content=#{content}
+        WHERE id=#{id} AND status='GENERATING'
+    </update>
+
+    <!-- 更新会话活跃时间以调整侧栏排序。 -->
+    <update id="touch">
+        UPDATE conversation
+        SET updated_at=clock_timestamp()
+        WHERE id=#{id}
+    </update>
+
+    <!-- 保存消息引用的来源位置、表格及混合预览快照。 -->
+    <insert id="citation">
+        INSERT INTO message_citation(message_id,citation_id,chunk_id,document_id,document_version,document_name,
+        page_number,chapter,section,line_start,line_end,snippet,tables,preview)
+        VALUES (#{message},#{c.citationId},#{c.chunkId},#{c.documentId},#{c.documentVersion},#{c.documentName},
+        #{c.page},#{c.chapter},#{c.section},#{c.lineStart},#{c.lineEnd},#{c.snippet},CAST(#{tables} AS
+        jsonb),CAST(#{preview} AS jsonb))
+        ON CONFLICT DO NOTHING
+    </insert>
+
+    <!-- 读取引用快照，仅为缺少快照的旧引用关联匹配的来源元数据。 -->
+    <select id="citations" resultType="com.example.rag.conversation.dto.ConversationModels$CitationSnapshot">
+        SELECT c.citation_id,c.document_id,c.document_version,c.document_name,c.page_number AS
+        page,c.chapter,c.section, c.line_start,c.line_end,c.chunk_id,c.snippet,c.tables::text AS
+        tables_json,c.preview::text AS preview_json, parent.metadata::text AS fallback_metadata_json
+        FROM message_citation c LEFT JOIN document_chunk parent ON jsonb_array_length(c.preview)=0 AND
+        jsonb_array_length(c.tables)=0 AND parent.id=c.chunk_id AND parent.document_id=c.document_id AND
+        parent.document_version=c.document_version AND parent.chunk_type='PARENT' AND
+        left(parent.content,length(c.snippet))=c.snippet
+        WHERE c.message_id=#{id}
+        ORDER BY c.id
+    </select>
+
+    <!-- 将已过期的运行中消息与请求追踪一并终结，恢复服务重启前的孤立请求。 -->
+    <update id="expire">
+        WITH expired AS ( UPDATE chat_message
+        SET status='FAILED',error_code='RAG_504_TIMEOUT'
+        WHERE conversation_id=#{id} AND role='ASSISTANT' AND status='GENERATING' AND
+        expires_at&lt;=clock_timestamp()
+        RETURNING request_id ) UPDATE rag_request_trace
+        SET status='FAILED',reason_code='RAG_504_TIMEOUT', latency_ms=greatest(0,extract(epoch
+        FROM clock_timestamp()-created_at)*1000)::bigint
+        WHERE status='RUNNING' AND request_id IN (SELECT request_id
+        FROM expired)
+    </update>
+
+    <!-- 读取本人已完成且范围未扩大的最近消息，排除当前请求和失败或取消轮次。 -->
+    <select id="history" resultType="com.example.rag.conversation.mapper.ConversationMapper$History">
+        SELECT m.role,m.content
+        FROM chat_message m JOIN conversation c ON c.id=m.conversation_id AND c.user_id=#{user} AND NOT c.deleted
+        WHERE m.conversation_id=#{conversation} AND m.user_id=#{user} AND m.request_id&lt;>#{request} AND
+        m.status='COMPLETED' AND m.knowledge_base_ids &lt;@ CAST(#{scope} AS jsonb) AND EXISTS(SELECT 1
+        FROM chat_message a
+        WHERE a.request_id=m.request_id AND a.role='ASSISTANT' AND a.status='COMPLETED')
+        ORDER BY m.id DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 查询请求所属用户，供取消请求校验身份。 -->
+    <select id="requestOwner" resultType="java.lang.Long">
+        SELECT user_id
+        FROM chat_message
+        WHERE request_id=#{request} AND role='ASSISTANT'
+    </select>
+
+    <!-- 统计会话中的消息数。 -->
+    <select id="countMessages" resultType="long">
+        SELECT count(*)
+        FROM chat_message
+        WHERE conversation_id=#{id}
+    </select>
+
+    <!-- 将实际入模正文与来源位置写入同一引用事务，不能事后读取当前版本替代。 -->
+    <update id="citationEvidence">
+        UPDATE message_citation
+        SET evidence_content=#{content},source_metadata=CAST(#{metadata} AS jsonb)
+        WHERE message_id=#{message} AND citation_id=#{citation}
+    </update>
+
+    <!-- 在消息终态事务内保存核验结果和检索追踪，历史刷新与 SSE 一致。 -->
+    <update id="verification">
+        UPDATE chat_message
+        SET confidence_level=#{confidence},faithfulness_status=#{status}, verification_details=CAST(#{details} AS
+        jsonb),retrieval_mode=#{route},retrieval_trace=CAST(#{trace} AS jsonb)
+        WHERE id=#{id}
+    </update>
+
+    <!-- 将没有本机工作线程的请求及追踪一并取消，避免遗留 RUNNING 统计。 -->
+    <update id="cancelRequest">
+        WITH cancelled AS ( UPDATE chat_message
+        SET status='CANCELLED'
+        WHERE request_id=#{request} AND role='ASSISTANT' AND status='GENERATING'
+        RETURNING request_id ) UPDATE rag_request_trace
+        SET status='CANCELLED',reason_code='CANCELLED', latency_ms=greatest(0,extract(epoch
+        FROM clock_timestamp()-created_at)*1000)::bigint
+        WHERE status='RUNNING' AND request_id IN (SELECT request_id
+        FROM cancelled)
+    </update>
+
+</mapper>

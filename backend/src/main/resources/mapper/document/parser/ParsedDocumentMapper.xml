@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.document.mapper.parser.ParsedDocumentMapper">
+    <!-- 查询有效文档版本的原文件来源。 -->
+    <select id="source" resultType="com.example.rag.document.mapper.parser.ParsedDocumentMapper$Source">
+        SELECT source_format AS format, object_key, size_bytes, sha256
+        FROM document_version
+        WHERE document_id = #{id} AND version_no = #{version}
+    </select>
+
+    <!-- 查询版本解析格式、统计和告警汇总。 -->
+    <select id="summary" resultType="com.example.rag.document.mapper.parser.ParsedDocumentMapper$Summary">
+        SELECT parser_version, updated_at AS parsed_at, character_count, warnings::text AS warnings_json,
+        block_count
+        FROM document_parse_result
+        WHERE document_id = #{id} AND document_version = #{version}
+    </select>
+
+    <!-- 按来源顺序分页读取版本解析块。 -->
+    <select id="blocks" resultType="com.example.rag.document.mapper.parser.ParsedDocumentMapper$BlockRow">
+        SELECT block_index, text, page, chapter, section, metadata::text AS metadata_json
+        FROM document_parsed_block
+        WHERE document_id = #{id} AND document_version = #{version}
+        ORDER BY block_index
+        LIMIT #{limit}
+        OFFSET #{offset}
+    </select>
+
+    <!-- 删除同版本旧块，供事务内替换完整产物。 -->
+    <delete id="deleteBlocks">
+        DELETE
+        FROM document_parsed_block
+        WHERE document_id = #{id} AND document_version = #{version}
+    </delete>
+
+    <!-- 批量保存解析块和来源元数据。 -->
+    <insert id="insertBlocks">
+        INSERT INTO document_parsed_block(document_id, document_version, block_index, text, page, chapter, section,
+        metadata)
+        VALUES
+        <foreach collection="blocks" item="block" separator=",">
+            (#{id}, #{version}, #{block.blockIndex}, #{block.text}, #{block.page,jdbcType=INTEGER},
+            #{block.chapter,jdbcType=VARCHAR}, #{block.section,jdbcType=VARCHAR}, CAST(#{block.metadataJson} AS
+            jsonb))
+        </foreach>
+    </insert>
+
+    <!-- 保存或替换版本解析汇总。 -->
+    <insert id="upsertResult">
+        INSERT INTO document_parse_result(document_id, document_version, source_format, parser_version, block_count,
+        character_count, warnings)
+        VALUES (#{result.documentId}, #{result.documentVersion}, #{result.format}, #{result.parserVersion},
+        #{result.blockCount}, #{result.characterCount}, CAST(#{result.warningsJson} AS jsonb))
+        ON CONFLICT (document_id, document_version) DO UPDATE
+        SET source_format = excluded.source_format, parser_version = excluded.parser_version, block_count =
+        excluded.block_count, character_count = excluded.character_count, warnings = excluded.warnings
+    </insert>
+
+</mapper>

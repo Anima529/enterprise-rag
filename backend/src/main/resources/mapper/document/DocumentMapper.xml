@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.document.mapper.DocumentMapper">
+    <!-- 复用既有 COLUMNS 条件，权限和查询字段保持原语义。 -->
+    <sql id="COLUMNS">
+        SELECT d.id, d.knowledge_base_id, d.current_version, d.name, d.source_format, d.mime_type, d.size_bytes,
+            d.sha256, d.status, d.created_by, u.username AS created_by_username, d.created_at, d.updated_at,
+            t.error_code, t.error_message
+        FROM document d JOIN sys_user u ON u.id = d.created_by
+        LEFT JOIN LATERAL (
+            SELECT error_code, error_message FROM document_index_task
+            WHERE document_id = d.id AND document_version = d.current_version
+            ORDER BY id DESC LIMIT 1
+        ) t ON true
+    </sql>
+
+    <!-- 保存首次上传的文档元数据。 -->
+    <insert id="insert">
+        INSERT INTO document(id, knowledge_base_id, name, source_format, mime_type, size_bytes, sha256, object_key,
+        created_by)
+        VALUES (#{id}, #{kbId}, #{file.name}, #{file.format}, #{mime}, #{size}, #{file.sha256}, #{key}, #{actorId})
+    </insert>
+
+    <!-- 统计知识库中未删除的文档数。 -->
+    <select id="count" resultType="long">
+        SELECT count(*)
+        FROM document
+        WHERE knowledge_base_id = #{kbId} AND deleted = false
+    </select>
+
+    <!-- 分页查询知识库中未删除的文档。 -->
+    <select id="list" resultType="com.example.rag.document.dto.DocumentResponse">
+        <include refid="COLUMNS"/>
+        WHERE d.knowledge_base_id = #{kbId} AND d.deleted = false
+        ORDER BY d.id
+        LIMIT #{limit}
+        OFFSET #{offset}
+    </select>
+
+    <!-- 查询未删除文档及当前版本的公开元数据。 -->
+    <select id="find" resultType="com.example.rag.document.dto.DocumentResponse">
+        <include refid="COLUMNS"/>
+        WHERE d.id = #{id} AND d.deleted = false
+    </select>
+
+    <!-- 判断同一知识库是否已有相同摘要的有效文档。 -->
+    <select id="duplicate" resultType="boolean">
+        SELECT EXISTS(SELECT 1
+        FROM document
+        WHERE knowledge_base_id = #{kbId} AND sha256 = #{sha} AND deleted = false)
+    </select>
+
+    <!-- 分页查询文档索引任务及重试状态。 -->
+    <select id="tasks" resultType="com.example.rag.document.dto.DocumentTaskResponse">
+        SELECT id, document_id, document_version, task_type, status, retry_count, error_code, error_message,
+        started_at, finished_at, created_at, updated_at, stage, attempt_count, auto_retry_count, next_attempt_at,
+        lease_expires_at
+        FROM document_index_task
+        WHERE document_id = #{id}
+        ORDER BY id DESC
+        LIMIT #{limit}
+        OFFSET #{offset}
+    </select>
+
+    <!-- 为文档版本创建待执行索引任务。 -->
+    <insert id="insertTask">
+        INSERT INTO document_index_task(document_id, document_version)
+        VALUES (#{id}, 1)
+    </insert>
+
+    <!-- 锁定上传补偿记录，防止与清理任务同时提交。 -->
+    <select id="lockUpload" resultType="java.lang.String">
+        SELECT object_key
+        FROM document_storage_cleanup
+        WHERE object_key = #{key} AND next_attempt_at = #{due} FOR UPDATE
+    </select>
+
+    <!-- 预分配文档 ID，供原文件对象命名。 -->
+    <select id="nextId" resultType="long">
+        SELECT nextval(pg_get_serial_sequence('document', 'id'))
+    </select>
+
+    <!-- 软删除文档并记录更新时间。 -->
+    <update id="softDelete">
+        UPDATE document
+        SET deleted = true
+        WHERE id = #{id} AND deleted = false
+    </update>
+
+    <!-- 查询指定版本的原文件对象键。 -->
+    <select id="objectKey" resultType="java.lang.String">
+        SELECT object_key
+        FROM document_version
+        WHERE document_id = #{id} AND version_no = #{version}
+    </select>
+
+    <!-- 统计文档的索引任务数。 -->
+    <select id="countTasks" resultType="long">
+        SELECT count(*)
+        FROM document_index_task
+        WHERE document_id = #{id}
+    </select>
+
+    <!-- 在对象上传前登记补偿记录，保证异常后仍可清理。 -->
+    <insert id="registerUpload">
+        INSERT INTO document_storage_cleanup(object_key, next_attempt_at)
+        VALUES (#{key}, #{due})
+    </insert>
+
+    <!-- 删除已被文档版本正式接管的上传补偿记录。 -->
+    <delete id="clearUpload">
+        DELETE
+        FROM document_storage_cleanup
+        WHERE object_key = #{key}
+    </delete>
+
+    <!-- 查询指定文档版本的真实格式，原文预览不得使用当前版本格式代替。 -->
+    <select id="versionFormat" resultType="com.example.rag.document.domain.DocumentFormat">
+        SELECT source_format
+        FROM document_version
+        WHERE document_id=#{id} AND version_no=#{version}
+    </select>
+
+    <!-- 从文档元数据创建第一个版本。 -->
+    <insert id="insertVersion">
+        INSERT INTO document_version(document_id, version_no, name, source_format, mime_type, size_bytes, sha256,
+        object_key) SELECT id, 1, name, source_format, mime_type, size_bytes, sha256, object_key
+        FROM document
+        WHERE id = #{id}
+    </insert>
+
+    <!-- 安排指定版本的持久化清理任务。 -->
+    <insert id="scheduleDeletion">
+        INSERT INTO document_cleanup_task(document_id,document_version,cleanup_type,next_attempt_at)
+        VALUES (#{id},0,'DELETED',#{due})
+        ON CONFLICT DO NOTHING
+    </insert>
+
+    <!-- 查询指定版本的原文件名称。 -->
+    <select id="versionName" resultType="java.lang.String">
+        SELECT name
+        FROM document_version
+        WHERE document_id = #{id} AND version_no = #{version}
+    </select>
+
+    <!-- 更新到期对象清理的领取时间并返回对象键。 -->
+    <select id="claimCleanup" resultType="java.lang.String" affectData="true" flushCache="true" useCache="false">
+        UPDATE document_storage_cleanup c
+        SET next_attempt_at = #{leaseUntil}
+        WHERE c.object_key IN (SELECT object_key
+        FROM document_storage_cleanup
+        WHERE next_attempt_at &lt;= now()
+        ORDER BY next_attempt_at, object_key
+        LIMIT #{limit} FOR UPDATE SKIP LOCKED)
+        RETURNING c.object_key
+    </select>
+
+    <!-- 检查原文件是否已被任一文档版本引用。 -->
+    <select id="objectReferenced" resultType="boolean">
+        SELECT EXISTS(SELECT 1
+        FROM document_version
+        WHERE object_key = #{key})
+    </select>
+
+</mapper>

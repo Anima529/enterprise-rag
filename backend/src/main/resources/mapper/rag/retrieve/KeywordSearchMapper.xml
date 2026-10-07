@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.rag.retrieve.mapper.KeywordSearchMapper">
+    <!-- FTS 排名仅在当前授权的可见 Child 上执行，同分按 Chunk ID 稳定排序。 -->
+    <select id="search" resultType="com.example.rag.rag.retrieve.service.KeywordRetriever$KeywordHit">
+        SELECT
+        <include refid="com.example.rag.rag.retrieve.mapper.AuthorizedRetrievalSql.COLUMNS"/>
+        ,1.0 AS distance,
+        <include refid="com.example.rag.rag.retrieve.mapper.AuthorizedRetrievalSql.SOURCES"/>
+        ,ts_rank_cd(c.keyword_vector,to_tsquery('simple',#{query})) AS keyword_score
+        <include refid="com.example.rag.rag.retrieve.mapper.AuthorizedRetrievalSql.SCOPE"/>
+        AND c.keyword_analyzer=#{analyzer} AND
+        c.keyword_content_hash=encode(sha256(convert_to(c.content,'UTF8')),'hex') AND c.keyword_vector @@
+        to_tsquery('simple',#{query})
+        ORDER BY keyword_score DESC,c.id
+        LIMIT #{topK}
+    </select>
+
+</mapper>

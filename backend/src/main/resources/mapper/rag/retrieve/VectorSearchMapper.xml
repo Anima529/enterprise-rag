@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.rag.retrieve.mapper.VectorSearchMapper">
+    <!-- 在最新账号、ACL、版本、模型与内容校验下执行授权向量检索。 -->
+    <select id="search" resultType="com.example.rag.rag.retrieve.repository.VectorSearchRepository$Hit">
+        SELECT
+        <include refid="com.example.rag.rag.retrieve.mapper.AuthorizedRetrievalSql.COLUMNS"/>
+        ,c.embedding &lt;=> CAST(#{vector} AS vector) AS distance,
+        <include refid="com.example.rag.rag.retrieve.mapper.AuthorizedRetrievalSql.SOURCES"/>
+        <include refid="com.example.rag.rag.retrieve.mapper.AuthorizedRetrievalSql.SCOPE"/>
+        AND c.embedding IS NOT NULL AND c.embedding_model=#{model} AND c.embedding_dimensions=#{dimensions} AND
+        e.model=c.embedding_model AND e.dimensions=c.embedding_dimensions AND
+        c.embedding_content_hash=encode(sha256(convert_to(c.content,'UTF8')),'hex')
+        ORDER BY c.embedding &lt;=> CAST(#{vector} AS vector),c.id
+        LIMIT #{topK}
+    </select>
+
+</mapper>

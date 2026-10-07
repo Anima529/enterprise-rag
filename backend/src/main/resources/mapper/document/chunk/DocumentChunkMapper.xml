@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.document.mapper.chunk.DocumentChunkMapper">
+    <!-- 读取有效文档版本所属的知识库与部门配对。 -->
+    <select id="scope" resultType="com.example.rag.document.mapper.chunk.DocumentChunkMapper$Scope">
+        SELECT d.knowledge_base_id, kb.department_id
+        FROM document d JOIN knowledge_base kb ON kb.id = d.knowledge_base_id JOIN document_version v ON
+        v.document_id = d.id AND v.version_no = #{version}
+        WHERE d.id = #{id}
+    </select>
+
+    <!-- 读取现有 Chunk 的稳定 ID 与类型序号。 -->
+    <select id="keys" resultType="com.example.rag.document.mapper.chunk.DocumentChunkMapper$Key">
+        SELECT id, chunk_type, chunk_index
+        FROM document_chunk
+        WHERE document_id = #{id} AND document_version = #{version}
+    </select>
+
+    <!-- 按版本和可选类型读取有效 Chunk 的来源及内容。 -->
+    <select id="rows" resultType="com.example.rag.document.mapper.chunk.DocumentChunkMapper$Row">
+        SELECT id, document_id, document_version, knowledge_base_id, department_id, parent_chunk_id, chunk_type,
+        chunk_index, content, token_count, page_number, chapter, section, metadata::text AS metadata_json
+        FROM document_chunk
+        WHERE document_id = #{id} AND document_version = #{version} AND deleted = false
+        <if test="type != null">
+            AND chunk_type = #{type}
+        </if>
+        ORDER BY chunk_index
+        LIMIT #{limit}
+        OFFSET #{offset}
+    </select>
+
+    <!-- 查询与当前解析结果仍一致的 Chunk 汇总。 -->
+    <select id="summary" resultType="com.example.rag.document.mapper.chunk.DocumentChunkMapper$Summary">
+        SELECT c.strategy_version, c.tokenizer, c.updated_at AS chunked_at, c.child_tokens, c.parent_tokens,
+        c.overlap_tokens, c.boundary_lookback_characters, c.parent_count, c.child_count
+        FROM document_chunk_result c JOIN document_parse_result p ON p.document_id = c.document_id AND
+        p.document_version = c.document_version
+        WHERE c.document_id = #{id} AND c.document_version = #{version} AND c.updated_at >= p.updated_at
+    </select>
+
+    <!-- 将版本原有 Chunk 标记为不可见，供重建替换。 -->
+    <update id="hide">
+        UPDATE document_chunk
+        SET deleted = true
+        WHERE document_id = #{id} AND document_version = #{version} AND deleted = false
+    </update>
+
+    <!-- 批量保存父子 Chunk，复用已有稳定 ID 并恢复有效状态。 -->
+    <insert id="upsertRows">
+        INSERT INTO document_chunk(id, document_id, document_version, knowledge_base_id, department_id,
+        parent_chunk_id, parent_type, chunk_type, chunk_index, content, token_count, page_number, chapter, section,
+        metadata, keyword_text,keyword_analyzer,keyword_content_hash)
+        VALUES
+        <foreach collection="rows" item="row" separator=",">
+            (#{row.id}, #{row.documentId}, #{row.documentVersion}, #{row.knowledgeBaseId}, #{row.departmentId},
+            #{row.parentChunkId,jdbcType=BIGINT}, CASE WHEN #{row.chunkType} = 'CHILD' THEN 'PARENT' ELSE NULL END,
+            #{row.chunkType}, #{row.chunkIndex}, #{row.content}, #{row.tokenCount},
+            #{row.pageNumber,jdbcType=INTEGER}, #{row.chapter,jdbcType=VARCHAR}, #{row.section,jdbcType=VARCHAR},
+            CAST(#{row.metadataJson} AS jsonb),
+            #{row.keywordText},#{row.keywordAnalyzer},encode(sha256(convert_to(#{row.content},'UTF8')),'hex'))
+        </foreach>
+        ON CONFLICT(id) DO UPDATE
+        SET parent_chunk_id = excluded.parent_chunk_id, parent_type = excluded.parent_type, content =
+        excluded.content, token_count = excluded.token_count, page_number = excluded.page_number, chapter =
+        excluded.chapter, section = excluded.section, metadata = excluded.metadata, deleted = false, embedding =
+        NULL, embedding_model = NULL, embedding_dimensions = NULL, embedding_content_hash = NULL,
+        keyword_text=excluded.keyword_text,keyword_analyzer=excluded.keyword_analyzer,
+        keyword_content_hash=excluded.keyword_content_hash
+    </insert>
+
+    <!-- 删除该版本旧 Embedding 汇总，防止新 Chunk 复用旧向量状态。 -->
+    <delete id="invalidateEmbeddings">
+        DELETE
+        FROM document_embedding_result
+        WHERE document_id=#{id} AND document_version=#{version}
+    </delete>
+
+    <!-- 批量预分配新 Chunk ID。 -->
+    <select id="allocateIds" resultType="java.lang.Long">
+        SELECT nextval(pg_get_serial_sequence('document_chunk','id'))
+        FROM generate_series(1, #{count})
+    </select>
+
+    <!-- 保存本次切分的配置、版本和父子数量汇总。 -->
+    <insert id="upsertSummary">
+        INSERT INTO document_chunk_result(document_id, document_version, strategy_version, tokenizer, child_tokens,
+        parent_tokens, overlap_tokens, boundary_lookback_characters, parent_count, child_count)
+        VALUES (#{id}, #{version}, #{strategy}, #{tokenizer}, #{config.childTokens}, #{config.parentTokens},
+        #{config.overlapTokens}, #{config.boundaryLookbackCharacters}, #{parents}, #{children}) ON
+        CONFLICT(document_id, document_version) DO UPDATE
+        SET strategy_version = excluded.strategy_version, tokenizer = excluded.tokenizer, child_tokens =
+        excluded.child_tokens, parent_tokens = excluded.parent_tokens, overlap_tokens = excluded.overlap_tokens,
+        boundary_lookback_characters = excluded.boundary_lookback_characters, parent_count = excluded.parent_count,
+        child_count = excluded.child_count
+    </insert>
+
+</mapper>

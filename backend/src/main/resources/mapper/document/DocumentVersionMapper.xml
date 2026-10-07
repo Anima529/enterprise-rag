@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.document.mapper.DocumentVersionMapper">
+    <!-- 检查文档是否已有待执行或运行中的版本构建。 -->
+    <select id="building" resultType="boolean">
+        SELECT EXISTS(SELECT 1
+        FROM document_index_task
+        WHERE document_id=#{id} AND status IN ('PENDING','RUNNING'))
+    </select>
+
+    <!-- 锁定有效文档，串行分配新版本。 -->
+    <select id="lock" resultType="java.lang.Long">
+        SELECT id
+        FROM document
+        WHERE id=#{id} AND NOT deleted FOR UPDATE
+    </select>
+
+    <!-- 插入新上传文件对应的版本元数据。 -->
+    <insert id="insert">
+        INSERT INTO
+        document_version(document_id,version_no,name,source_format,mime_type,size_bytes,sha256,object_key)
+        VALUES (#{id},#{version},#{file.name},#{file.format},#{mime},#{size},#{file.sha256},#{key})
+    </insert>
+
+    <!-- 统计文档全部版本数。 -->
+    <select id="count" resultType="long">
+        SELECT count(*)
+        FROM document_version
+        WHERE document_id=#{id}
+    </select>
+
+    <!-- 创建指定版本及类型的索引任务。 -->
+    <insert id="task">
+        INSERT INTO document_index_task(document_id,document_version,task_type)
+        VALUES (#{id},#{version},#{type})
+    </insert>
+
+    <!-- 查询清理范围内去重后的原文件对象键。 -->
+    <select id="keys" resultType="java.lang.String">
+        SELECT DISTINCT object_key
+        FROM document_version
+        WHERE document_id=#{id}
+    </select>
+
+    <!-- 复制指定版本的原文件元数据，创建重新索引的版本。 -->
+    <insert id="copy">
+        INSERT INTO
+        document_version(document_id,version_no,name,source_format,mime_type,size_bytes,sha256,object_key) SELECT
+        document_id,#{version},name,source_format,mime_type,size_bytes,sha256,object_key
+        FROM document_version
+        WHERE document_id=#{id} AND version_no=#{current}
+    </insert>
+
+    <!-- 保存清理任务状态及下次尝试时间。 -->
+    <update id="finish">
+        UPDATE document_cleanup_task
+        SET status=#{status},error_code=#{error},next_attempt_at=#{due}
+        WHERE id=#{task.id} AND status='RUNNING' AND attempt_count=#{task.attemptCount}
+    </update>
+
+    <!-- 查询文档的清理任务及失败原因。 -->
+    <select id="cleanup" resultType="com.example.rag.document.mapper.DocumentVersionMapper$Cleanup">
+        SELECT id,document_id,document_version,cleanup_type,status,attempt_count,next_attempt_at,error_code
+        FROM document_cleanup_task
+        WHERE document_id=#{id}
+        ORDER BY id DESC
+        LIMIT 100
+    </select>
+
+    <!-- 分页读取文档版本列表。 -->
+    <select id="versions" resultType="com.example.rag.document.mapper.DocumentVersionMapper$Version">
+        SELECT version_no,name,source_format,sha256,size_bytes,status,created_at,updated_at
+        FROM document_version
+        WHERE document_id=#{id}
+        ORDER BY version_no DESC
+        LIMIT #{limit}
+        OFFSET #{offset}
+    </select>
+
+    <!-- 领取到期清理任务并延后下次领取时间。 -->
+    <select id="claim" resultType="com.example.rag.document.mapper.DocumentVersionMapper$Cleanup" affectData="true" flushCache="true" useCache="false">
+        UPDATE document_cleanup_task
+        SET status='RUNNING',attempt_count=attempt_count+1, next_attempt_at=clock_timestamp()+#{leaseMs}*interval
+        '1 millisecond',error_code=NULL
+        WHERE id=(SELECT id
+        FROM document_cleanup_task
+        WHERE status&lt;>'COMPLETED' AND next_attempt_at&lt;=clock_timestamp()
+        ORDER BY next_attempt_at,id
+        LIMIT 1 FOR UPDATE SKIP LOCKED)
+        RETURNING id,document_id,document_version,cleanup_type,status,attempt_count,next_attempt_at,error_code
+    </select>
+
+    <!-- 删除指定文档版本范围的解析结果。 -->
+    <delete id="removeParsed">
+        DELETE
+        FROM document_parse_result
+        WHERE document_id=#{id} AND (#{version}=0 OR document_version=#{version})
+    </delete>
+
+    <!-- 删除指定文档版本范围的 Chunk 结果。 -->
+    <delete id="removeChunks">
+        DELETE
+        FROM document_chunk_result
+        WHERE document_id=#{id} AND (#{version}=0 OR document_version=#{version})
+    </delete>
+
+    <!-- 锁定文档所属知识库以串行校验版本写入。 -->
+    <select id="lockKnowledgeBase" resultType="java.lang.Long">
+        SELECT k.id
+        FROM knowledge_base k JOIN document d ON d.knowledge_base_id=k.id
+        WHERE d.id=#{id} FOR UPDATE OF k
+    </select>
+
+    <!-- 基于全部已有版本分配下一个版本号，避免复用失败版本。 -->
+    <select id="nextVersion" resultType="int">
+        SELECT COALESCE(max(version_no),0)+1
+        FROM document_version
+        WHERE document_id=#{id}
+    </select>
+
+    <!-- 查询文档归属的知识库 ID。 -->
+    <select id="knowledgeBase" resultType="java.lang.Long">
+        SELECT knowledge_base_id
+        FROM document
+        WHERE id=#{id}
+    </select>
+
+    <!-- 检查对象是否仍被有效文档版本引用。 -->
+    <select id="activeReference" resultType="boolean">
+        SELECT EXISTS(SELECT 1
+        FROM document_version v JOIN document d ON d.id=v.document_id
+        WHERE v.object_key=#{key} AND NOT d.deleted)
+    </select>
+
+</mapper>

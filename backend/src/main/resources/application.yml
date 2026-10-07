@@ -1,0 +1,261 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  tomcat:
+    max-swallow-size: ${DOCUMENT_MAX_REQUEST_BYTES:11534336}B
+spring:
+  application:
+    name: enterprise-rag
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:127.0.0.1}:${POSTGRES_PORT:55433}/${POSTGRES_DB:rag}
+    username: ${POSTGRES_USER:rag}
+    password: ${POSTGRES_PASSWORD}
+    hikari:
+      connection-timeout: 3000
+      validation-timeout: 1000
+      maximum-pool-size: 10
+  flyway:
+    enabled: true
+    clean-disabled: true
+    validate-on-migrate: true
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:56379}
+      password: ${REDIS_PASSWORD}
+      connect-timeout: 2s
+      timeout: 2s
+  mvc:
+    problemdetails:
+      enabled: false
+  servlet:
+    multipart:
+      max-file-size: ${DOCUMENT_MAX_BYTES:10485760}B
+      max-request-size: ${DOCUMENT_MAX_REQUEST_BYTES:11534336}B
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+sa-token:
+  token-name: satoken
+  timeout: ${TOKEN_TIMEOUT_SECONDS:28800}
+  active-timeout: ${TOKEN_ACTIVE_TIMEOUT_SECONDS:1800}
+  is-concurrent: true
+  is-share: false
+  is-read-header: true
+  is-read-cookie: false
+  is-read-body: false
+  is-log: false
+  is-print: false
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    call-setters-on-nulls: true
+  global-config:
+    banner: false
+    db-config:
+      id-type: auto
+rag:
+  evaluation:
+    enabled: ${EVALUATION_ENABLED:true}
+    max-cases: ${EVALUATION_MAX_CASES:100}
+    max-pending-runs: ${EVALUATION_MAX_PENDING_RUNS:10}
+    metric-k: ${EVALUATION_METRIC_K:5}
+    poll-interval: ${EVALUATION_POLL_INTERVAL:1s}
+    case-timeout: ${EVALUATION_CASE_TIMEOUT:90s}
+    lease: ${EVALUATION_LEASE:2m}
+    judge-output-tokens: ${EVALUATION_JUDGE_OUTPUT_TOKENS:512}
+  governance:
+    enabled: ${GOVERNANCE_ENABLED:true}
+    user-requests: ${RATE_USER_REQUESTS:30}
+    department-requests: ${RATE_DEPARTMENT_REQUESTS:120}
+    window: ${RATE_WINDOW:1m}
+    model-concurrency: ${MODEL_GLOBAL_CONCURRENCY:8}
+    model-lease: ${MODEL_PERMIT_LEASE:2m}
+    cache-enabled: ${SEMANTIC_CACHE_ENABLED:true}
+    cache-ttl: ${SEMANTIC_CACHE_TTL:10m}
+    cache-entries: ${SEMANTIC_CACHE_ENTRIES:20}
+    cache-similarity: ${SEMANTIC_CACHE_SIMILARITY:0.995}
+    cache-max-characters: ${SEMANTIC_CACHE_MAX_CHARACTERS:200000}
+  prompts:
+    relevance: ${PROMPT_RELEVANCE_RESOURCE:classpath:prompts/relevance.st}
+    answer: ${PROMPT_ANSWER_RESOURCE:classpath:prompts/answer.st}
+    rewrite: ${PROMPT_REWRITE_RESOURCE:classpath:prompts/rewrite.st}
+    router: ${PROMPT_ROUTER_RESOURCE:classpath:prompts/router.st}
+    decompose: ${PROMPT_DECOMPOSE_RESOURCE:classpath:prompts/decompose.st}
+    hyde: ${PROMPT_HYDE_RESOURCE:classpath:prompts/hyde.st}
+    faithfulness: ${PROMPT_FAITHFULNESS_RESOURCE:classpath:prompts/faithfulness.st}
+  generation:
+    temperature: ${LLM_TEMPERATURE:0.1}
+    structured-output-characters-per-token: ${STRUCTURED_OUTPUT_CHARACTERS_PER_TOKEN:16}
+  chat-persistence:
+    progress-interval: ${CHAT_PROGRESS_INTERVAL:1s}
+  usage:
+    timezone: ${USAGE_TIMEZONE:Asia/Shanghai}
+    realtime-ttl: ${USAGE_REALTIME_TTL:2d}
+    max-query-days: ${USAGE_MAX_QUERY_DAYS:366}
+  admin-logs:
+    timezone: ${ADMIN_LOGS_TIMEZONE:Asia/Shanghai}
+    max-query-days: ${ADMIN_LOGS_MAX_QUERY_DAYS:366}
+  adaptive:
+    enabled: ${ADAPTIVE_ENABLED:true}
+    history-rounds: ${ADAPTIVE_HISTORY_ROUNDS:3}
+    history-tokens: ${ADAPTIVE_HISTORY_TOKENS:1200}
+    max-subqueries: ${ADAPTIVE_MAX_SUBQUERIES:3}
+    max-model-calls: ${ADAPTIVE_MAX_MODEL_CALLS:4}
+    output-tokens: ${ADAPTIVE_OUTPUT_TOKENS:512}
+    call-timeout: ${ADAPTIVE_CALL_TIMEOUT:4s}
+    planning-timeout: ${ADAPTIVE_PLANNING_TIMEOUT:16s}
+    retrieval-timeout: ${ADAPTIVE_RETRIEVAL_TIMEOUT:45s}
+  faithfulness:
+    enabled: ${FAITHFULNESS_ENABLED:true}
+    timeout: ${FAITHFULNESS_TIMEOUT:6s}
+    input-tokens: ${FAITHFULNESS_INPUT_TOKENS:16000}
+    output-tokens: ${FAITHFULNESS_OUTPUT_TOKENS:768}
+    medium-coverage: ${FAITHFULNESS_MEDIUM_COVERAGE:0.6}
+    max-unsupported-claims: ${FAITHFULNESS_MAX_UNSUPPORTED_CLAIMS:20}
+    max-claim-characters: ${FAITHFULNESS_MAX_CLAIM_CHARACTERS:1000}
+  retrieval:
+    default-complexity: ${RETRIEVAL_DEFAULT_COMPLEXITY:STANDARD}
+    workers: ${RETRIEVAL_WORKERS:8}
+    queue-capacity: ${RETRIEVAL_QUEUE_CAPACITY:16}
+    rrf-k: ${RETRIEVAL_RRF_K:60}
+    vector-timeout: ${RETRIEVAL_VECTOR_TIMEOUT:20s}
+    keyword-timeout: ${RETRIEVAL_KEYWORD_TIMEOUT:2s}
+    vector-sql-timeout-seconds: ${RETRIEVAL_VECTOR_SQL_TIMEOUT_SECONDS:2}
+    keyword-sql-timeout-seconds: ${RETRIEVAL_KEYWORD_SQL_TIMEOUT_SECONDS:2}
+    relative-score-floor: ${RETRIEVAL_RELATIVE_SCORE_FLOOR:0.5}
+    max-parents-per-document: ${RETRIEVAL_MAX_PARENTS_PER_DOCUMENT:2}
+    backfill-batch-size: ${KEYWORD_BACKFILL_BATCH_SIZE:250}
+    simple:
+      vector-top-k: ${RETRIEVAL_SIMPLE_VECTOR_TOP_K:8}
+      keyword-top-k: 1
+      fusion-top-k: ${RETRIEVAL_SIMPLE_FUSION_TOP_K:8}
+      final-top-k: ${RETRIEVAL_SIMPLE_FINAL_TOP_K:3}
+    standard:
+      vector-top-k: ${RETRIEVAL_STANDARD_VECTOR_TOP_K:30}
+      keyword-top-k: ${RETRIEVAL_STANDARD_KEYWORD_TOP_K:30}
+      fusion-top-k: ${RETRIEVAL_STANDARD_FUSION_TOP_K:20}
+      final-top-k: ${RETRIEVAL_STANDARD_FINAL_TOP_K:5}
+    complex:
+      vector-top-k: ${RETRIEVAL_COMPLEX_VECTOR_TOP_K:20}
+      keyword-top-k: ${RETRIEVAL_COMPLEX_KEYWORD_TOP_K:20}
+      fusion-top-k: ${RETRIEVAL_COMPLEX_FUSION_TOP_K:40}
+      final-top-k: ${RETRIEVAL_COMPLEX_FINAL_TOP_K:5}
+  reranker:
+    model: ${RERANK_MODEL:qwen3.7-text-rerank}
+    endpoint: ${RERANK_ENDPOINT:https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank}
+    api-key: ${RERANK_API_KEY:}
+    dashscope-api-key: ${DASHSCOPE_API_KEY:}
+    connect-timeout: ${RERANK_CONNECT_TIMEOUT:500ms}
+    timeout: ${RERANK_TIMEOUT:800ms}
+    max-concurrency: ${RERANK_MAX_CONCURRENCY:2}
+    max-candidates: ${RERANK_MAX_CANDIDATES:40}
+    top-n: ${RERANK_TOP_N:5}
+    max-text-tokens: ${RERANK_MAX_TEXT_TOKENS:4000}
+    max-request-tokens: ${RERANK_MAX_REQUEST_TOKENS:120000}
+  chat:
+    model: ${LLM_MODEL:qwen3.8-flash}
+    base-url: ${LLM_BASE_URL:https://maas.qianwenaiapi.com/compatible-mode/v1}
+    api-key: ${LLM_API_KEY:}
+    dashscope-api-key: ${DASHSCOPE_API_KEY:}
+    top-k: ${CHAT_VECTOR_TOP_K:8}
+    min-similarity: ${CHAT_MIN_SIMILARITY:0.2}
+    context-tokens: ${CHAT_CONTEXT_TOKENS:6000}
+    min-context-tokens: ${CHAT_MIN_CONTEXT_TOKENS:64}
+    question-tokens: ${CHAT_QUESTION_TOKENS:1024}
+    max-output-tokens: ${LLM_MAX_OUTPUT_TOKENS:2048}
+    max-output-characters: ${CHAT_MAX_OUTPUT_CHARACTERS:16000}
+    snippet-characters: ${CHAT_SNIPPET_CHARACTERS:600}
+    max-concurrency: ${LLM_MAX_CONCURRENCY:4}
+    connect-timeout: ${LLM_CONNECT_TIMEOUT:5s}
+    generation-timeout: ${LLM_TIMEOUT:60s}
+    timeout: ${CHAT_TIMEOUT:120s}
+    heartbeat: ${CHAT_HEARTBEAT:15s}
+  embedding:
+    model: ${EMBEDDING_MODEL:qwen3.7-text-embedding-flash}
+    dimensions: ${EMBEDDING_DIMENSIONS:1024}
+    base-url: ${EMBEDDING_BASE_URL:https://maas.qianwenaiapi.com/compatible-mode/v1}
+    api-key: ${EMBEDDING_API_KEY:}
+    dashscope-api-key: ${DASHSCOPE_API_KEY:}
+    batch-size: ${EMBEDDING_BATCH_SIZE:10}
+    max-concurrency: ${EMBEDDING_MAX_CONCURRENCY:2}
+    connect-timeout: ${EMBEDDING_CONNECT_TIMEOUT:5s}
+    timeout: ${EMBEDDING_TIMEOUT:15s}
+    max-retries: ${EMBEDDING_MAX_RETRIES:2}
+    retry-backoff: ${EMBEDDING_RETRY_BACKOFF:500ms}
+    persistence-batch-size: ${EMBEDDING_PERSISTENCE_BATCH_SIZE:100}
+    max-top-k: ${VECTOR_MAX_TOP_K:100}
+  chunk:
+    child-tokens: ${CHUNK_CHILD_TOKENS:350}
+    parent-tokens: ${CHUNK_PARENT_TOKENS:1400}
+    overlap-tokens: ${CHUNK_OVERLAP_TOKENS:50}
+    boundary-lookback-characters: ${CHUNK_BOUNDARY_LOOKBACK_CHARACTERS:100}
+    max-chunks: ${CHUNK_MAX_CHUNKS:30000}
+    timeout: ${CHUNK_TIMEOUT:30s}
+    batch-size: ${CHUNK_BATCH_SIZE:250}
+  parser:
+    timeout: ${PARSER_TIMEOUT:30s}
+    max-blocks: ${PARSER_MAX_BLOCKS:10000}
+    max-sheets: ${PARSER_MAX_SHEETS:50}
+    max-rows-per-sheet: ${PARSER_MAX_ROWS_PER_SHEET:50000}
+    max-columns: ${PARSER_MAX_COLUMNS:256}
+    max-cells: ${PARSER_MAX_CELLS:500000}
+    excel-row-group-size: ${PARSER_EXCEL_ROW_GROUP_SIZE:20}
+    max-shared-strings: ${PARSER_MAX_SHARED_STRINGS:100000}
+    pdf-repeated-margin-min-pages: ${PARSER_PDF_REPEATED_MARGIN_MIN_PAGES:3}
+    pdf-repeated-margin-ratio: ${PARSER_PDF_REPEATED_MARGIN_RATIO:0.6}
+    pdf-column-min-gap: ${PARSER_PDF_COLUMN_MIN_GAP:12}
+    pdf-column-space-multiplier: ${PARSER_PDF_COLUMN_SPACE_MULTIPLIER:4}
+    pdf-column-alignment-tolerance: ${PARSER_PDF_COLUMN_ALIGNMENT_TOLERANCE:4}
+  parser-persistence:
+    batch-size: ${PARSER_PERSISTENCE_BATCH_SIZE:500}
+  index-task:
+    enabled: ${INDEX_TASK_ENABLED:true}
+    workers: ${INDEX_TASK_WORKERS:2}
+    poll-interval: ${INDEX_TASK_POLL_INTERVAL:1s}
+    task-timeout: ${INDEX_TASK_TIMEOUT:2m}
+    max-auto-retries: ${INDEX_TASK_MAX_AUTO_RETRIES:2}
+    retry-backoff: ${INDEX_TASK_RETRY_BACKOFF:5s}
+    max-retry-backoff: ${INDEX_TASK_MAX_RETRY_BACKOFF:1m}
+    recovery-batch-size: ${INDEX_TASK_RECOVERY_BATCH_SIZE:20}
+  document:
+    max-bytes: ${DOCUMENT_MAX_BYTES:10485760}
+    max-text-characters: ${DOCUMENT_MAX_TEXT_CHARACTERS:2000000}
+    max-zip-entries: ${DOCUMENT_MAX_ZIP_ENTRIES:2000}
+    max-zip-expanded-bytes: ${DOCUMENT_MAX_ZIP_EXPANDED_BYTES:104857600}
+    max-zip-entry-bytes: ${DOCUMENT_MAX_ZIP_ENTRY_BYTES:20971520}
+    max-zip-compression-ratio: ${DOCUMENT_MAX_ZIP_COMPRESSION_RATIO:200}
+    max-pdf-pages: ${DOCUMENT_MAX_PDF_PAGES:2000}
+    download-ttl-seconds: ${DOCUMENT_DOWNLOAD_TTL_SECONDS:60}
+    storage-timeout: ${DOCUMENT_STORAGE_TIMEOUT:30s}
+    cleanup-grace: ${DOCUMENT_CLEANUP_GRACE:1h}
+    cleanup-interval: ${DOCUMENT_CLEANUP_INTERVAL:5m}
+    cleanup-batch-size: ${DOCUMENT_CLEANUP_BATCH_SIZE:10}
+  auth:
+    bcrypt-strength: ${BCRYPT_STRENGTH:12}
+  minio:
+    endpoint: ${MINIO_ENDPOINT:http://127.0.0.1:59000}
+    public-endpoint: ${MINIO_PUBLIC_ENDPOINT:${MINIO_ENDPOINT:http://127.0.0.1:59000}}
+    access-key: ${MINIO_ACCESS_KEY}
+    secret-key: ${MINIO_SECRET_KEY}
+    bucket: ${MINIO_BUCKET:rag-documents}
+    timeout: ${MINIO_TIMEOUT:3s}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db,redis,minio
+logging:
+  pattern:
+    level: '%5p [requestId=%X{requestId:-} traceId=%X{traceId:-}]'

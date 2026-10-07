@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.knowledgebase.mapper.KnowledgeBaseMapper">
+    <!-- 复用既有 PERMISSION 条件，权限和查询字段保持原语义。 -->
+    <sql id="PERMISSION">
+        CASE WHEN #{actor.role} = 'SYSTEM_ADMIN' OR k.owner_user_id = #{actor.id} THEN 3
+        ELSE COALESCE((
+            SELECT max(CASE a.permission WHEN 'ADMIN' THEN 3 WHEN 'WRITE' THEN 2 ELSE 1 END)
+            FROM knowledge_base_acl a WHERE a.knowledge_base_id = k.id AND (
+                (a.subject_type = 'USER' AND a.subject_id = CAST(#{actor.id} AS text)) OR
+                (a.subject_type = 'DEPARTMENT' AND a.subject_id = CAST(#{actor.departmentId} AS text)) OR
+                (a.subject_type = 'ROLE' AND a.subject_id = #{actor.role})
+            )
+        ), 0) END
+    </sql>
+
+    <!-- 复用既有 VISIBLE 条件，权限和查询字段保持原语义。 -->
+    <sql id="VISIBLE">
+        k.deleted = false AND (#{management} OR (k.status = 'ENABLED' AND (
+            <include refid="PERMISSION"/>
+        ) > 0))
+    </sql>
+
+    <!-- 复用既有 COLUMNS 条件，权限和查询字段保持原语义。 -->
+    <sql id="COLUMNS">
+        SELECT k.id, k.name, k.description, k.department_id, d.name AS department_name,
+            k.owner_user_id, u.username AS owner_username, k.visibility, k.status,
+            k.embedding_model, k.embedding_dimensions, k.generation_model, k.created_at, k.updated_at,
+            CASE (
+                <include refid="PERMISSION"/>
+        ) WHEN 3 THEN 'ADMIN' WHEN 2 THEN 'WRITE' WHEN 1 THEN 'READ' END AS permission
+        FROM knowledge_base k
+        JOIN sys_department d ON d.id = k.department_id
+        JOIN sys_user u ON u.id = k.owner_user_id
+    </sql>
+
+    <!-- 锁定未删除知识库以串行处理管理和授权写入。 -->
+    <select id="lock" resultType="java.lang.Long">
+        SELECT id
+        FROM knowledge_base
+        WHERE id = #{id} AND deleted = false FOR UPDATE
+    </select>
+
+    <!-- 更新知识库可编辑属性和状态。 -->
+    <update id="update">
+        UPDATE knowledge_base
+        SET name = #{name}, description = #{description}, status = #{status}
+        WHERE id = #{id} AND deleted = false
+    </update>
+
+    <!-- 创建知识库并保存归属和模型配置。 -->
+    <select id="insert" resultType="long" affectData="true" flushCache="true" useCache="false">
+        INSERT INTO knowledge_base(name, description, department_id, owner_user_id, embedding_model,
+        embedding_dimensions, generation_model)
+        VALUES (#{name}, #{description}, #{departmentId}, #{ownerUserId}, #{embeddingModel}, #{embeddingDimensions},
+        #{generationModel})
+        RETURNING id
+    </select>
+
+    <!-- 按相同授权条件统计知识库数。 -->
+    <select id="count" resultType="long">
+        SELECT count(*)
+        FROM knowledge_base k
+        WHERE
+        <include refid="VISIBLE"/>
+    </select>
+
+    <!-- 按授权条件或管理条件分页查询知识库。 -->
+    <select id="list" resultType="com.example.rag.knowledgebase.dto.KnowledgeBaseResponse">
+        <include refid="COLUMNS"/>
+        WHERE
+        <include refid="VISIBLE"/>
+        ORDER BY k.id
+        LIMIT #{limit}
+        OFFSET #{offset}
+    </select>
+
+    <!-- 按 ID 读取未删除的知识库。 -->
+    <select id="find" resultType="com.example.rag.knowledgebase.dto.KnowledgeBaseResponse">
+        <include refid="COLUMNS"/>
+        WHERE k.id = #{id} AND k.deleted = false
+    </select>
+
+    <!-- 查询知识库完整 ACL 集合。 -->
+    <select id="acl" resultType="com.example.rag.knowledgebase.dto.AclEntry">
+        SELECT subject_type, subject_id, permission
+        FROM knowledge_base_acl
+        WHERE knowledge_base_id = #{id}
+        ORDER BY subject_type, subject_id
+    </select>
+
+    <!-- 检查用户主体是否有效。 -->
+    <select id="activeUser" resultType="boolean">
+        SELECT EXISTS(SELECT 1
+        FROM sys_user u JOIN sys_department d ON d.id = u.department_id
+        WHERE u.id = #{id} AND u.status = 'ACTIVE' AND u.deleted = false AND d.status = 'ACTIVE' AND d.deleted =
+        false)
+    </select>
+
+    <!-- 删除知识库原有 ACL，供事务内完整替换。 -->
+    <delete id="deleteAcl">
+        DELETE
+        FROM knowledge_base_acl
+        WHERE knowledge_base_id = #{id}
+    </delete>
+
+    <!-- 保存一条知识库主体授权。 -->
+    <insert id="insertAcl">
+        INSERT INTO knowledge_base_acl(knowledge_base_id, subject_type, subject_id, permission)
+        VALUES (#{id}, #{entry.subjectType}, #{entry.subjectId}, #{entry.permission})
+    </insert>
+
+    <!-- 软删除知识库并记录更新时间。 -->
+    <update id="softDelete">
+        UPDATE knowledge_base
+        SET deleted = true
+        WHERE id = #{id} AND deleted = false
+    </update>
+
+    <!-- 同步知识库模型配置，保留已有向量的模型标记。 -->
+    <update id="synchronizeModels">
+        UPDATE knowledge_base
+        SET embedding_model=#{embeddingModel}, embedding_dimensions=#{embeddingDimensions},
+        generation_model=#{generationModel}
+        WHERE NOT deleted AND (embedding_model IS DISTINCT
+        FROM #{embeddingModel} OR embedding_dimensions IS DISTINCT
+        FROM #{embeddingDimensions} OR generation_model IS DISTINCT
+        FROM #{generationModel})
+    </update>
+
+    <!-- 检查部门主体是否有效。 -->
+    <select id="activeDepartment" resultType="boolean">
+        SELECT EXISTS(SELECT 1
+        FROM sys_department
+        WHERE id = #{id} AND status = 'ACTIVE' AND deleted = false)
+    </select>
+
+</mapper>

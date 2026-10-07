@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.rag.document.mapper.embedding.DocumentEmbeddingMapper">
+    <!-- 读取仍与 Chunk 和解析快照一致的 Embedding 结果。 -->
+    <select id="result" resultType="com.example.rag.document.mapper.embedding.DocumentEmbeddingMapper$Result">
+        SELECT e.document_id,e.document_version,e.model,e.dimensions,e.chunked_at,e.child_count,e.batch_count,
+        e.call_count,e.total_tokens,e.duration_ms,e.updated_at AS embedded_at
+        FROM document_embedding_result e JOIN document_chunk_result c ON c.document_id=e.document_id AND
+        c.document_version=e.document_version AND c.updated_at=e.chunked_at JOIN document_parse_result p ON
+        p.document_id=c.document_id AND p.document_version=c.document_version AND p.updated_at &lt;= c.updated_at
+        WHERE e.document_id=#{id} AND e.document_version=#{version}
+    </select>
+
+    <!-- 批量写入子 Chunk 向量、模型和内容摘要。 -->
+    <update id="write">
+        UPDATE document_chunk c
+        SET embedding=CAST(v.vector AS vector), embedding_model=#{model}, embedding_dimensions=#{dimensions},
+        embedding_content_hash=v.hash
+        FROM (VALUES
+        <foreach collection="rows" item="r" separator=",">
+            (#{r.id},#{r.vector},#{r.contentHash})
+        </foreach>
+        ) v(id,vector,hash)
+        WHERE c.id=v.id AND c.document_id=#{id} AND c.document_version=#{version} AND NOT c.deleted AND
+        c.chunk_type='CHILD'
+    </update>
+
+    <!-- 查询文档版本当前索引状态。 -->
+    <select id="status" resultType="java.lang.String">
+        SELECT status
+        FROM document_version
+        WHERE document_id=#{id} AND version_no=#{version}
+    </select>
+
+    <!-- 保存 Embedding 批次、调用、Token 和耗时汇总。 -->
+    <insert id="save">
+        INSERT INTO document_embedding_result(document_id,document_version,model,dimensions,chunked_at,
+        child_count,batch_count,call_count,total_tokens,duration_ms)
+        VALUES
+        (#{documentId},#{documentVersion},#{model},#{dimensions},#{chunkedAt},#{childCount},#{batchCount},#{callCount},#{totalTokens},#{durationMs})
+        ON CONFLICT(document_id,document_version) DO UPDATE
+        SET model=excluded.model, dimensions=excluded.dimensions, chunked_at=excluded.chunked_at,
+        child_count=excluded.child_count, batch_count=excluded.batch_count,
+        call_count=excluded.call_count,total_tokens=excluded.total_tokens,duration_ms=excluded.duration_ms
+    </insert>
+
+    <!-- 读取指定版本待生成向量的有效子 Chunk。 -->
+    <select id="children" resultType="com.example.rag.document.mapper.embedding.DocumentEmbeddingMapper$Child">
+        SELECT id, content
+        FROM document_chunk
+        WHERE document_id=#{id} AND document_version=#{version} AND NOT deleted AND chunk_type='CHILD'
+        ORDER BY chunk_index, id
+    </select>
+
+    <!-- 统计模型、维度、摘要及父 Chunk 均有效的向量子块。 -->
+    <select id="validChildren" resultType="int">
+        SELECT count(*)
+        FROM document_chunk c JOIN document_chunk p ON p.id=c.parent_chunk_id AND p.chunk_type='PARENT' AND NOT
+        p.deleted
+        WHERE c.document_id=#{id} AND c.document_version=#{version} AND NOT c.deleted AND c.chunk_type='CHILD' AND
+        c.embedding IS NOT NULL AND c.embedding_model=#{model} AND c.embedding_dimensions=#{dimensions} AND
+        c.embedding_content_hash=encode(sha256(convert_to(c.content,'UTF8')),'hex')
+    </select>
+
+</mapper>
